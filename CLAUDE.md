@@ -14,9 +14,9 @@
 |---|---|---|
 | Customer | Vendor | `customer_name` → `vendor_name`, `customer_id` → `vendor_id` |
 | Open Invoice | Open Bill | NetSuite type `VendBill`, status `A` = Open, `B` = Paid In Full |
-| Credit Memo | Vendor Credit | NetSuite type `VendCred`, status `A` = Open, `B` = Fully Applied |
-| Customer Payment (received) | Vendor Payment (sent) | NetSuite type `VendPymt`, status `B` = In Transit, `C` = Cleared |
-| Net AR (asset) | Net AP (liability) | Net = open bills − vendor credits − unapplied prepayments |
+| Credit Memo | Vendor Credit | NetSuite type `VendCred`, status codes **not in reference doc** — verify from BQ data |
+| Customer Payment (received) | Bill Payment (sent) | NetSuite type `VendPymt`, status codes **partially documented** — see notes below |
+| Net AR (asset) | Net AP (liability) | Net = open bills − vendor credits − unapplied bill payments |
 | `ar_notes` / `ar_saved_filters` | `ap_notes` / `ap_saved_filters` | Firestore collections |
 | `arData` Cloud Function | `apData` Cloud Function | Firebase function name |
 | `cmr-ar-dashboard` hosting target | `cmr-ap-dashboard` hosting target | Firebase hosting alias |
@@ -26,6 +26,68 @@
 | `vw_CustomerPayments` | `vw_VendorPayments` (confirm name) | Need to verify actual view name in `ptp_dev` |
 
 > **Note on ptp_dev view names:** Before writing SQL, run `SELECT table_name FROM cmr-finance-data-lake.ptp_dev.INFORMATION_SCHEMA.TABLES` to confirm the actual `vw_*` view names. The AR dashboard uses `vw_Invoices`, `vw_CreditMemos`, `vw_CustomerPayments` from `OTC_Dev`. The AP equivalent likely lives in `ptp_dev` with similar naming but may differ.
+
+---
+
+## NetSuite AP Status Codes (from reference PDF)
+
+These are the confirmed status codes for AP transaction types. **This is the authoritative reference for SQL WHERE clauses.**
+
+### Vendor Bills (`VendBill`) — the core of AP aging
+| Code | Display Label | Include? |
+|---|---|---|
+| `VendBill:A` | Bill: Open | **YES** — this is the "open bills" filter |
+| `VendBill:B` | Bill: Paid In Full | No — exclude |
+
+SQL filter: `WHERE status = 'A'` (same letter convention as AR `CustInvc:A`)
+
+### Bill Payments (`VendPymt`) — payments sent to vendors
+| Code | Display Label | Notes |
+|---|---|---|
+| `VendPymt:V` | Bill Payment: Voided | Exclude |
+| `VendPymt:Z` | Bill Payment: Online Bill Pay Pending Accounting Approval | Niche — likely exclude |
+
+> **Critical gap:** `VendPymt:A/B/C` are **not documented** in the reference PDF. Unlike AR (`CustPymt:A/B/C`), the standard bill payment statuses are absent. In Step 0, run `SELECT DISTINCT status FROM ptp_dev.vw_VendorPayments LIMIT 100` to discover actual status values in your data before writing the SQL filter.
+
+### Vendor Credits (`VendCred`) — **not in reference PDF**
+> `VendCred` status codes are **not listed** in the reference PDF at all. This is a known gap — NetSuite's published status codes are incomplete. In Step 0, run `SELECT DISTINCT status FROM ptp_dev.vw_VendorCredits LIMIT 100` to find actual values. Expected convention based on AR: `A` = Open/Unapplied, `B` = Fully Applied — but **do not assume, verify first**.
+
+### Purchase Orders (`PurchOrd`) — upstream of bills, FYI only
+| Code | Display Label |
+|---|---|
+| `PurchOrd:A` | Pending Supervisor Approval |
+| `PurchOrd:B` | Pending Receipt |
+| `PurchOrd:C` | Rejected by Supervisor |
+| `PurchOrd:D` | Partially Received |
+| `PurchOrd:E` | Pending Billing/Partially Received |
+| `PurchOrd:F` | Pending Bill |
+| `PurchOrd:G` | Fully Billed |
+| `PurchOrd:H` | Closed |
+
+POs are not included in the AP aging dashboard (they're pre-bill), but knowing these codes is useful context if a `createdfrom` PO reference appears in bill data.
+
+### Vendor Return Authorizations (`VendAuth`) — FYI only
+| Code | Display Label |
+|---|---|
+| `VendAuth:A` | Pending Approval |
+| `VendAuth:B` | Pending Return |
+| `VendAuth:C` | Cancelled |
+| `VendAuth:D` | Partially Returned |
+| `VendAuth:E` | Pending Credit/Partially Returned |
+| `VendAuth:F` | Pending Credit |
+| `VendAuth:G` | Credited |
+| `VendAuth:H` | Closed |
+
+VendAuth is related to vendor credits but is a separate transaction type. Not included in AP aging.
+
+### Status Code Comparison: AR vs AP
+| Concept | AR Code | AP Code |
+|---|---|---|
+| Open (filter target) | `CustInvc:A` → status `'A'` | `VendBill:A` → status `'A'` ✓ same |
+| Paid/Closed | `CustInvc:B` → status `'B'` | `VendBill:B` → status `'B'` ✓ same |
+| Credit Open | `CustCred:A` → status `'A'` | `VendCred:A` → status `'A'` (assumed, verify) |
+| Credit Applied | `CustCred:B` → status `'B'` | `VendCred:B` → status `'B'` (assumed, verify) |
+| Payment statuses | `CustPymt:A/B/C` | `VendPymt:?` — **must verify in BQ** |
 
 ---
 
